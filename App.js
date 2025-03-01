@@ -1,12 +1,14 @@
 const express = require('express');
-const oracledb = require('oracledb');
+// const oracledb = require('oracledb');
 const cors = require('cors');
 const dbConfig = require('./dbConfig'); 
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
-const fs = require('fs');
+const fs = require('fs'); 
 const path = require('path');
+const pool = require('./dbConfig');
+const PDFDocument = require("pdfkit");
 
 const JWT_SECRET = 'mySuperSecretKey@1234';
 const app = express();
@@ -15,74 +17,103 @@ const PORT = 3000;
 app.use(cors());
 app.use(express.json());
 
-// Database connection
-async function testConnection() {
-  let connection;
-  try {
-    connection = await oracledb.getConnection(dbConfig);
-    console.log('Connected to Oracle Database');
-  } catch (err) {
-    console.error('Error connecting to Oracle Database:', err);
-  } finally {
-    if (connection) {
-      await connection.close();
-    }
-  }
-}
-
-testConnection();
-
 // API to insert data into signup_details table
 app.post('/signup', async (req, res) => {
   const { username, name, password } = req.body;
 
-  let connection;
-
   try {
+    const client = await pool.connect();
     const hashedPassword = await bcrypt.hash(password, 10);
-    connection = await oracledb.getConnection(dbConfig);
 
-    const result = await connection.execute(
+    const result = await client.query(
       `INSERT INTO signup_details (username, name, password)
-       VALUES (:username, :name, :password)`,
-      { username, name, password:hashedPassword }, 
-      { autoCommit: true }  
+       VALUES ($1, $2, $3) RETURNING *`,
+      [username, name, hashedPassword]
     );
 
-    res.status(201).send({ message: 'User signed up successfully', result });
+    client.release();
+    res.status(201).send({ message: 'User signed up successfully', user: result.rows[0] });
   } catch (err) {
-    console.error('Error executing query:', err);
+    console.error('Error executing query:', err.message);
     res.status(500).send({ error: 'Failed to sign up user' });
-  } finally {
-    if (connection) {
-      await connection.close();
-    }
   }
 });
 
-// app.get('/signup/get/details', async (req, res) => {
+
+// Get all signup details
+app.get('/signup/get/details', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT username, name, password, role FROM signup_details`);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'No users found' });
+    }
+
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error('Error retrieving users:', err);
+    res.status(500).json({ error: 'Failed to retrieve users' });
+  }
+});
+
+// Get all admins
+app.get('/signup/get/admins', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT id, username, name, role FROM signup_details WHERE role = 'admin'`);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'No admins found' });
+    }
+
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error('Error retrieving admins:', err);
+    res.status(500).json({ error: 'Failed to retrieve admins' });
+  }
+});
+
+// Get all users
+app.get('/signup/get/users', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT id, username, name, role FROM signup_details WHERE role = 'user'`);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'No users found' });
+    }
+
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error('Error retrieving users:', err);
+    res.status(500).json({ error: 'Failed to retrieve users' });
+  }
+});
+
+
+// GET SPECIFIC DETAILS FROM SIGNUP TABLE
+// app.get('/signup/get/:id', async (req, res) => {
+//   const { id } = req.params; 
 //   let connection;
 
 //   try {
 //     connection = await oracledb.getConnection(dbConfig);
 
-//     // Query to fetch all users from the signup_details table
+//     // Query to fetch a specific user by id
 //     const result = await connection.execute(
-//       `SELECT username, name, password, role FROM signup_details`,
-//       [], // No parameters needed in the query
-//       { outFormat: oracledb.OUT_FORMAT_OBJECT }  // To get results as objects
+//       `SELECT username, name, password, role, id FROM signup_details WHERE id = :id`,
+//       { id },
+//       { outFormat: oracledb.OUT_FORMAT_OBJECT }
 //     );
 
-//     // If no users found, send an appropriate message
+//     // Check if user is found
 //     if (result.rows.length === 0) {
-//       return res.status(404).send({ message: 'No users found' });
+//       return res.status(404).send({ message: 'User not found' });
 //     }
 
 //     // Respond with the fetched data
-//     res.status(200).send(result.rows);
+//     res.status(200).send(result.rows[0]); // Send only the first matching user
 //   } catch (err) {
-//     console.error('Error executing query:', err);
-//     res.status(500).send({ error: 'Failed to retrieve users' });
+//     console.error('Error executing query for user:', err);
+//     res.status(500).send({ error: 'Failed to retrieve user details' });
 //   } finally {
 //     if (connection) {
 //       await connection.close();
@@ -90,197 +121,100 @@ app.post('/signup', async (req, res) => {
 //   }
 // });
 
-
-// API to get all admins
-app.get('/signup/get/admins', async (req, res) => {
-  let connection;
-
-  try {
-    connection = await oracledb.getConnection(dbConfig);
-
-    // Query to fetch users with role 'admin'
-    const result = await connection.execute(
-      `SELECT id, username, name, password, role FROM signup_details WHERE role = 'admin'`,
-      [],
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-
-    // Check if admins are found
-    if (result.rows.length === 0) {
-      return res.status(404).send({ message: 'No admins found' });
-    }
-
-    // Respond with the fetched data
-    res.status(200).send(result.rows);
-  } catch (err) {
-    console.error('Error executing query for admins:', err);
-    res.status(500).send({ error: 'Failed to retrieve admins' });
-  } finally {
-    if (connection) {
-      await connection.close();
-    }
-  }
-});
-
-// API to get all users
-app.get('/signup/get/users', async (req, res) => {
-  let connection;
-
-  try {
-    connection = await oracledb.getConnection(dbConfig);
-
-    // Query to fetch users with role 'user'
-    const result = await connection.execute(
-      `SELECT id, username, name, password, role FROM signup_details WHERE role = 'user'`,
-      [],
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-
-    // Check if users are found
-    if (result.rows.length === 0) {
-      return res.status(404).send({ message: 'No users found' });
-    }
-
-    // Respond with the fetched data
-    res.status(200).send(result.rows);
-  } catch (err) {
-    console.error('Error executing query for users:', err);
-    res.status(500).send({ error: 'Failed to retrieve users' });
-  } finally {
-    if (connection) {
-      await connection.close();
-    }
-  }
-});
-
-// GET SPECIFIC DETAILS FROM SIGNUP TABLE
-app.get('/signup/get/:id', async (req, res) => {
-  const { id } = req.params; // Extract id from the URL
-  let connection;
-
-  try {
-    connection = await oracledb.getConnection(dbConfig);
-
-    // Query to fetch a specific user by id
-    const result = await connection.execute(
-      `SELECT id, username, name, password, role FROM signup_details WHERE id = :id`,
-      { id },
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-
-    // Check if user is found
-    if (result.rows.length === 0) {
-      return res.status(404).send({ message: 'User not found' });
-    }
-
-    // Respond with the fetched data
-    res.status(200).send(result.rows[0]); // Send only the first matching user
-  } catch (err) {
-    console.error('Error executing query for user:', err);
-    res.status(500).send({ error: 'Failed to retrieve user details' });
-  } finally {
-    if (connection) {
-      await connection.close();
-    }
-  }
-});
-
-
 // UPDATE SIGNUP TABLE
 app.put('/signup/update/:id', async (req, res) => {
   const { id } = req.params; // Extract id from the URL
-  const { username, name, password, role } = req.body; // Get new values from the request body
-  let connection;
+  const { username, name, role } = req.body; // Get new values except password
 
   try {
-    // Optionally hash password if it's being updated
-    const hashedPassword = password ? await bcrypt.hash(password, 10) : undefined;
-
-    connection = await oracledb.getConnection(dbConfig);
-
-    // Update query to change user details based on id
-    const result = await connection.execute(
-      `UPDATE signup_details SET username = :username, name = :name, password = :password, role = :role WHERE id = :id`,
-      {
-        username,
-        name,
-        password: hashedPassword || password, // If password is not updated, use the old one
-        role,
-        id
-      },
-      { autoCommit: true }
+    const result = await pool.query(
+      `UPDATE signup_details 
+       SET username = $1, name = $2, role = $3 
+       WHERE id = $4`,
+      [username, name, role, id]
     );
 
-    // Check if the update was successful
-    if (result.rowsAffected === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).send({ message: 'User not found or no changes made' });
     }
 
-    // Respond with a success message
     res.status(200).send({ message: 'User details updated successfully' });
   } catch (err) {
     console.error('Error executing update query:', err);
     res.status(500).send({ error: 'Failed to update user details' });
-  } finally {
-    if (connection) {
-      await connection.close();
-    }
   }
 });
 
+app.delete('/signup/delete/:id', async (req, res) => {
+  const { id } = req.params; // Get id from URL
+
+  try {
+    const result = await pool.query(`DELETE FROM signup_details WHERE id = $1`, [id]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.status(200).json({ message: 'User deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting user:', err);
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
 
 
 
 // Login API
 app.post('/login', async (req, res) => {
-
   const { username, password } = req.body;
 
-  let connection;
+  let client;
 
   try {
-
-    connection = await oracledb.getConnection(dbConfig);
+    // Acquire a client from the pool
+    client = await pool.connect();
 
     // Query to find user by username
-    const result = await connection.execute(
-      `SELECT username, password, role FROM signup_details WHERE username = :username`,
-      { username }
+    const result = await client.query(
+      `SELECT username, password, role FROM signup_details WHERE username = $1`,
+      [username]
     );
-    // console.log('Database query result:', result.rows);
 
     if (result.rows.length === 0) {
       // User not found
       return res.status(404).send({ error: 'User not found' });
     }
 
-    const [dbusername, dbPassword, role] = result.rows[0]; 
-    // console.log('username:', dbusername, 'Password:', dbPassword, 'Role:', role);
+    // Extract the username, password, and role from the result
+    const { username: dbusername, password: dbPassword, role } = result.rows[0];
 
-    // Compare entered password with hashed password
+    // Compare entered password with the hashed password
     const isPasswordMatch = await bcrypt.compare(password, dbPassword);
 
     if (!isPasswordMatch) {
       return res.status(401).send({ error: 'Invalid username or password' });
     }
 
-    const token = jwt.sign({ username: dbusername }, JWT_SECRET, { expiresIn: '1h' });
+    // Generate JWT token
+    const token = jwt.sign({ username: dbusername, role }, JWT_SECRET, { expiresIn: '1h' });
 
-    // Success: Send response (or generate JWT here if needed)
-    res.status(200).send({ 
-      message: 'Login successful', 
+    // Success: Send response with token and user details
+    res.status(200).send({
+      message: 'Login successful',
       token,
-      user: {username: dbusername, role}
+      user: { username: dbusername, role }
     });
   } catch (err) {
     console.error('Error during login:', err);
     res.status(500).send({ error: 'Failed to login' });
   } finally {
-    if (connection) {
-      await connection.close();
+    // Release the client back to the pool
+    if (client) {
+      client.release();
     }
   }
 });
+
 
 // ADD PRODUCT
 // Multer setup for image upload (image will be uploaded to server)
@@ -294,207 +228,355 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-app.post('/products', upload.single('image'), async (req, res) => {
+app.post('/products', async (req, res) => {
   const { product_name, category, buying_price, quantity, unit, expiry_date } = req.body;
-  const image = req.file ? fs.readFileSync(path.join(__dirname, 'uploads', req.file.filename)) : null;
 
   if (!product_name || !buying_price || !quantity || !expiry_date) {
-    return res.status(400).send("Missing required fields: product_name, buying_price, quantity, or expiry_date.");
+    return res.status(400).json({ error: "Missing required fields: product_name, buying_price, quantity, or expiry_date." });
   }
 
-  let connection;
+  let client;
   try {
-    connection = await oracledb.getConnection(dbConfig);
+    client = await pool.connect();
 
-    // Insert product into the Products table
+    // Insert product into the products table
     const query = `
-      INSERT INTO Products (product_name, category, buying_price, quantity, unit, expiry_date, image)
-      VALUES (:product_name, :category, :buying_price, :quantity, :unit, TO_DATE(:expiry_date, 'YYYY-MM-DD'), :image)
+      INSERT INTO products (product_name, category, buying_price, quantity, unit, expiry_date)
+      VALUES ($1, $2, $3, $4, $5, $6) RETURNING *;
     `;
-    
-    const binds = {
-      product_name,
-      category,
-      buying_price,
-      quantity,
-      unit,
-      expiry_date,
-      image
-    };
 
-    const result = await connection.execute(query, binds, { autoCommit: true });
+    const values = [product_name, category, buying_price, quantity, unit, expiry_date];
 
-    res.status(201).send({ message: 'Product added successfully', result });
+    const result = await client.query(query, values);
+
+    res.status(201).json({ message: 'Product added successfully', product: result.rows[0] });
+
   } catch (err) {
-    console.error('Error executing query:', err);
-    res.status(500).send({ error: 'Failed to add product' });
+    console.error('Error inserting product:', err);
+    res.status(500).json({ error: 'Failed to add product' });
+
   } finally {
-    if (connection) {
-      await connection.close();
+    if (client) {
+      client.release(); // Release connection back to pool
     }
   }
 });
 
 // API to fetch product data from the database
 app.get('/getProducts', async (req, res) => {
-  let connection;
-
+  let client;
+  
   try {
-    connection = await oracledb.getConnection(dbConfig);
+    client = await pool.connect();
 
-    // Query to fetch all data from the Products table
-    const result = await connection.execute(
+    // Query to fetch all data from the products table
+    const result = await client.query(
       `SELECT product_name, category, buying_price, quantity, unit, 
-              TO_CHAR(expiry_date, 'YYYY/MM/DD') AS expiry_date
-       FROM Products`,
-      [],
-      { outFormat: oracledb.OUT_FORMAT_OBJECT } // Return rows as objects
+              TO_CHAR(expiry_date, 'YYYY/MM/DD') AS expiry_date 
+       FROM products`
     );
 
-    res.status(200).send(result.rows); // Send the data to the client
+    res.status(200).json(result.rows); // Send the data to the client
   } catch (err) {
     console.error('Error fetching products:', err);
-    res.status(500).send({ error: 'Failed to fetchproducts' });
+    res.status(500).json({ error: 'Failed to fetch products' });
   } finally {
-    if (connection) {
-      await connection.close();
+    if (client) {
+      client.release(); // Release connection back to the pool
     }
   }
 });
 
 // TOTAL NUMBER OF CATEOGORY FROM PRODUCT
+// Get the count of distinct product categories
 app.get('/product/category/count', async (req, res) => {
-  let connection;
-
   try {
-    connection = await oracledb.getConnection(dbConfig);
+    const result = await pool.query(`SELECT COUNT(DISTINCT category) AS no_of_category FROM products`);
 
-    // Query to fetch the count of distinct categories from the Products table
-    const result = await connection.execute(
-      `SELECT COUNT(DISTINCT category) AS no_of_category FROM products`
-    );
-
-    // Log the full result to check its structure
-    // console.log("Full Query Result:", result);
-
-    // Check if rows are returned and the expected result is in place
-    if (result.rows && result.rows.length > 0) {
-      // Access the count value directly from result.rows[0][0]
-      const categoryCount = result.rows[0][0];  // Access the first row, first column
-
-      // Send the category count in the response
-      res.json({ no_of_category: categoryCount });
+    if (result.rows.length > 0) {
+      res.json({ no_of_category: result.rows[0].no_of_category });
     } else {
       res.status(404).json({ error: 'No data found' });
     }
   } catch (error) {
     console.error("Error fetching category count:", error);
     res.status(500).json({ error: 'Failed to fetch category count' });
-  } finally {
-    if (connection) {
-      await connection.close();
-    }
   }
 });
 
-// TOTAL NUMBER OF PRODUCTS
+// Get the total number of products
 app.get('/product/count', async (req, res) => {
-  let connection;
-
   try {
-    connection = await oracledb.getConnection(dbConfig);
+    const result = await pool.query(`SELECT COUNT(*) AS no_of_product FROM products`);
 
-    // Query to fetch the count of distinct categories from the Products table
-    const result = await connection.execute(
-      `SELECT COUNT(*) AS no_of_product FROM products`
-    );
-
-    // Check if rows are returned and the expected result is in place
-    if (result.rows && result.rows.length > 0) {
-      // Access the count value directly from result.rows[0][0]
-      const productCount = result.rows[0][0];  // Access the first row, first column
-
-      // Send the category count in the response
-      res.json({ no_of_product: productCount });
+    if (result.rows.length > 0) {
+      res.json({ no_of_product: result.rows[0].no_of_product });
     } else {
       res.status(404).json({ error: 'No data found' });
     }
   } catch (error) {
-    console.error("Error fetching category count:", error);
-    res.status(500).json({ error: 'Failed to fetch category count' });
-  } finally {
-    if (connection) {
-      await connection.close();
-    }
+    console.error("Error fetching product count:", error);
+    res.status(500).json({ error: 'Failed to fetch product count' });
   }
 });
 
-// TOTAL AMOUNT OF ALL AVAILABLE PRODUCTS
+// Get the total amount of all available products
 app.get('/product/amount', async (req, res) => {
-  let connection;
-
   try {
-    connection = await oracledb.getConnection(dbConfig);
+    const result = await pool.query(`SELECT SUM(quantity * buying_price) AS total_amount FROM products`);
 
-    // Query to fetch the count of distinct categories from the Products table
-    const result = await connection.execute(
-      `SELECT SUM(quantity * buying_price) AS total_amount FROM Products`
-    );
-
-    // Check if rows are returned and the expected result is in place
-    if (result.rows && result.rows.length > 0) {
-      // Access the count value directly from result.rows[0][0]
-      const productAmount = result.rows[0][0];  // Access the first row, first column
-
-      // Send the category count in the response
-      res.json({ total_product_amount: productAmount });
+    if (result.rows.length > 0) {
+      res.json({ total_product_amount: result.rows[0].total_amount });
     } else {
       res.status(404).json({ error: 'No data found' });
     }
   } catch (error) {
-    console.error("Error fetching category count:", error);
-    res.status(500).json({ error: 'Failed to fetch category count' });
-  } finally {
-    if (connection) {
-      await connection.close();
-    }
+    console.error("Error fetching total product amount:", error);
+    res.status(500).json({ error: 'Failed to fetch total product amount' });
   }
 });
 
-// TOTAL NUMBER OF LOW STOCKS
+// Get the total number of low stock products
 app.get('/product/stocks/low', async (req, res) => {
-  let connection;
-
   try {
-    connection = await oracledb.getConnection(dbConfig);
+    const result = await pool.query(`SELECT COUNT(*) AS low_stock_count FROM products WHERE quantity <= 10`);
 
-    // Query to fetch the count of distinct categories from the Products table
-    const result = await connection.execute(
-      `SELECT COUNT(*) AS low_stock_count FROM products WHERE quantity <= 10`
-    );
-
-    // Check if rows are returned and the expected result is in place
-    if (result.rows && result.rows.length > 0) {
-      // Access the count value directly from result.rows[0][0]
-      const lowStocks = result.rows[0][0];  // Access the first row, first column
-
-      // Send the category count in the response
-      res.json({ total_low_stocks: lowStocks });
+    if (result.rows.length > 0) {
+      res.json({ total_low_stocks: result.rows[0].low_stock_count });
     } else {
       res.status(404).json({ error: 'No data found' });
     }
   } catch (error) {
-    console.error("Error fetching category count:", error);
-    res.status(500).json({ error: 'Failed to fetch category count' });
-  } finally {
-    if (connection) {
-      await connection.close();
-    }
+    console.error("Error fetching low stock count:", error);
+    res.status(500).json({ error: 'Failed to fetch low stock count' });
   }
 });
+
+
+// SALES API
+app.post("/sales", async (req, res) => {
+  const { cart } = req.body;
+
+  try {
+    for (let item of cart) {
+      const { product_name, soldQuantity, buying_price, category, expiry_date, unit } = item;
+
+      const total_price = parseFloat(buying_price) * soldQuantity;
+
+      // Check Stock Before Selling
+      const product = await pool.query(
+        `SELECT quantity, expiry_date FROM products WHERE product_name = $1`,
+        [product_name]
+      );
+
+      const stockQuantity = product.rows[0].quantity;
+      const expiryDate = new Date(product.rows[0].expiry_date);
+      const today = new Date();
+      const diffDays = Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24));
+
+      // Expired Product Check
+      if (expiryDate < today) {
+        return res.status(400).json({ message: `${product_name} is Expired! Cannot Sell 🚫` });
+      }
+
+      // Low Stock Check
+      if (stockQuantity < soldQuantity) {
+        return res.status(400).json({ message: `${product_name} is Out of Stock!` });
+      }
+
+      // Expiring Soon Check
+      if (diffDays <= 3) {
+        return res.status(400).json({ message: `${product_name} is Expiring Soon! Only ${diffDays} days left.` });
+      }
+
+      // Insert into Sales Table
+      await pool.query(
+        `INSERT INTO sales (product_name, sold_quantity, total_price, category, expiry_date, unit)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [product_name, soldQuantity, total_price, category, expiry_date, unit]
+      );
+
+      // Reduce Stock Quantity
+      await pool.query(
+        `UPDATE products SET quantity = quantity - $1 WHERE product_name = $2 AND quantity >= $1`,
+        [soldQuantity, product_name]
+      );
+    }
+
+    res.status(201).json({ message: "Sales Recorded Successfully" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to Record Sales" });
+  }
+});
+
+app.get("/sales", async (req, res) => {
+  const { days } = req.query;
+
+  try {
+    let query = `SELECT * FROM sales ORDER BY sale_date DESC`;
+
+    if (days) {
+      query = `SELECT * FROM sales WHERE sale_date >= CURRENT_DATE - INTERVAL '${days} days' ORDER BY sale_date DESC`;
+    }
+
+    const result = await pool.query(query);
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error("❌ Error Fetching Sales:", error);
+    res.status(500).json({ message: "Failed to Fetch Sales" });
+  }
+});
+
+
+// SALES REPORT
+const folderPath = "./reports";
+if (!fs.existsSync(folderPath)) {
+  fs.mkdirSync(folderPath);
+  console.log("📄 Reports Folder Created Automatically");
+}
+
+const generateReport = async (title, data, filename, res) => {
+  const doc = new PDFDocument({ margin: 30, size: "A4" });
+  const stream = fs.createWriteStream(`${folderPath}/${filename}`);
+
+  res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+  res.setHeader("Content-Type", "application/pdf");
+
+  doc.pipe(stream);
+  doc.pipe(res);
+
+  title = title.replace(/[^\x00-\x7F]+/g, ""); // Remove Special Characters
+
+  if (title.includes("Monthly Sales Report")) {
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    const monthNumber = title.match(/\d+/)[0];
+    const monthName = monthNames[parseInt(monthNumber) - 1];
+    title = `Monthly Sales Report for ${monthName}`;
+  }
+
+  doc.font("Helvetica-Bold").fontSize(18).text(title, { align: "center" });
+  doc.text(`Date: ${new Date().toLocaleString("en-IN")}`, { align: "center" });
+  doc.moveDown(1);
+  doc.text("------------------------------------------------------", { align: "center" });
+
+  const y = doc.y; 
+
+  doc.font("Helvetica-Bold").fontSize(12);
+  doc.text("S.N.", 50, y, { align: "left" });
+  doc.text("Product Name", 100, y, {  align: "left" });
+  doc.text("Quantity", 200, y, { align: "left" });
+  doc.text("Date & Time", 270, y, { width:100, align: "center" });
+  doc.text("Price (Rs.)", 370, y, {  align: "center" });
+  
+  doc.moveDown(1);
+
+  let total = 0;
+
+  data.forEach((sale, index) => {
+    const { product_name, sold_quantity, total_price, sale_date } = sale;
+    total += parseFloat(total_price);
+    const y = doc.y; 
+
+    doc.font("Helvetica").fontSize(11);
+    doc.text(index + 1, 50, y, { align: "left" });
+    doc.text(product_name, 100, y, { align: "left" });
+    doc.text(sold_quantity.toString(), 200, y, { align: "left" });
+    doc.text(sale_date, 270, y, { width:150, align: "center" });
+    doc.text(`Rs. ${total_price}`, 370, y, {  align: "center" });
+
+    doc.moveDown(2.5)
+  });
+
+  doc.moveDown(1);
+  doc.text("-------------------------------------------------", { align: "center" });
+  doc.font("Helvetica-Bold").fontSize(12).text(`Grand Total: Rs. ${total}`, { align: "right" });
+
+  doc.end();
+  console.log(`✅ ${title} Generated`);
+};
+
+
+
+app.get("/sales/daily/report", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT product_name, sold_quantity, total_price, sale_date 
+       FROM sales 
+       WHERE sale_date::DATE = CURRENT_DATE 
+       ORDER BY sale_date DESC`
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "No Sales Found Today 😓" });
+    }
+
+    const filename = `daily_report_${Date.now()}.pdf`;
+    res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+    generateReport("🔥 Daily Sales Report", result.rows, filename, res);
+  } catch (error) {
+    console.error("❌ Daily Report Error:", error);
+    res.status(500).json({ message: "Failed to Generate Daily Report" });
+  }
+});
+
+
+// ---------------- MONTHLY REPORT ----------------
+app.get("/sales/monthly/report/:month", async (req, res) => {
+  const { month } = req.params;
+  try {
+    const result = await pool.query(
+      `SELECT product_name, sold_quantity, total_price, sale_date 
+       FROM sales 
+       WHERE EXTRACT(MONTH FROM sale_date) = $1 
+       AND EXTRACT(YEAR FROM sale_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+       ORDER BY sale_date DESC`,
+      [month]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: `No Sales Found for Month ${month} 😓` });
+    }
+
+    const filename = `monthly_report_${month}_${Date.now()}.pdf`;
+    res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+    generateReport(`📅 Monthly Sales Report for ${month}`, result.rows, filename, res);
+  } catch (error) {
+    console.error("❌ Monthly Report Error:", error);
+    res.status(500).json({ message: "Failed to Generate Monthly Report" });
+  }
+});
+
+app.get("/sales/yearly/report/:year", async (req, res) => {
+  const { year } = req.params;
+  try {
+    const result = await pool.query(
+      `SELECT product_name, sold_quantity, total_price, sale_date 
+       FROM sales 
+       WHERE EXTRACT(YEAR FROM sale_date) = $1
+       ORDER BY sale_date DESC`,
+      [year]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: `No Sales Found for Year ${year} 😓` });
+    }
+
+    const filename = `yearly_report_${year}_${Date.now()}.pdf`;
+    res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+    generateReport(`📆 Yearly Sales Report for Year ${year}`, result.rows, filename, res);
+  } catch (error) {
+    console.error("❌ Yearly Report Error:", error);
+    res.status(500).json({ message: "Failed to Generate Yearly Report" });
+  }
+});
+
+
+
 
 
 // Start the server
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
