@@ -271,8 +271,8 @@ app.get('/getProducts', async (req, res) => {
 
     // Query to fetch all data from the products table
     const result = await client.query(
-      `SELECT product_name, category, buying_price, quantity, unit, 
-              TO_CHAR(expiry_date, 'YYYY/MM/DD') AS expiry_date 
+      `SELECT product_id, product_name, category, buying_price, quantity, unit, 
+              TO_CHAR(expiry_date, 'YYYY-MM-DD') AS expiry_date 
        FROM products`
     );
 
@@ -286,6 +286,47 @@ app.get('/getProducts', async (req, res) => {
     }
   }
 });
+
+app.put('/products/:id', async (req, res) => {
+  const { id } = req.params;
+  const { product_name, category, buying_price, quantity, unit, expiry_date } = req.body;
+
+  if (!product_name || !buying_price || !quantity || !expiry_date) {
+    return res.status(400).json({ error: "Missing required fields: product_name, buying_price, quantity, expiry_date" });
+  }
+
+  let client;
+  try {
+    client = await pool.connect();
+
+    const query = `
+      UPDATE products
+      SET product_name = $1, category = $2, buying_price = $3, quantity = $4, unit = $5, expiry_date = $6
+      WHERE product_id = $7
+      RETURNING *;
+    `;
+
+    const values = [product_name, category, buying_price, quantity, unit, expiry_date, id];
+
+    const result = await client.query(query, values);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    res.status(200).json({ message: 'Product updated successfully', product: result.rows[0] });
+
+  } catch (err) {
+    console.error('Error updating product:', err);
+    res.status(500).json({ error: 'Failed to update product' });
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+});
+
+
 
 // TOTAL NUMBER OF CATEOGORY FROM PRODUCT
 // Get the count of distinct product categories
@@ -351,6 +392,33 @@ app.get('/product/stocks/low', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch low stock count' });
   }
 });
+
+app.get('/sales/summary/last7days', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        COUNT(id) AS no_of_sales_transaction,
+        COALESCE(SUM(total_price), 0) AS total_sales_amount
+      FROM 
+        sales
+      WHERE 
+        sale_date >= NOW() - INTERVAL '7 days'
+    `);
+
+    if (result.rows.length > 0) {
+      res.json({
+        no_of_sales_transaction: result.rows[0].no_of_sales_transaction,
+        total_sales_amount: result.rows[0].total_sales_amount
+      });
+    } else {
+      res.status(404).json({ error: 'No sales data found in the last 7 days' });
+    }
+  } catch (error) {
+    console.error("Error fetching sales summary:", error);
+    res.status(500).json({ error: 'Failed to fetch sales summary' });
+  }
+});
+
 
 
 // SALES API
@@ -490,7 +558,7 @@ const generateReport = async (title, data, filename, res) => {
 
   doc.moveDown(1);
   doc.text("-------------------------------------------------", { align: "center" });
-  doc.font("Helvetica-Bold").fontSize(12).text(`Grand Total: Rs. ${total}`, { align: "right" });
+  doc.font("Helvetica-Bold").fontSize(12).text(`Grand Total: Rs. ${total}`, { align: "center" });
 
   doc.end();
   console.log(`✅ ${title} Generated`);
