@@ -231,6 +231,7 @@ const upload = multer({ storage });
 app.post('/products', async (req, res) => {
   const { product_name, category, buying_price, quantity, unit, expiry_date } = req.body;
 
+  // Check if required fields are provided
   if (!product_name || !buying_price || !quantity || !expiry_date) {
     return res.status(400).json({ error: "Missing required fields: product_name, buying_price, quantity, or expiry_date." });
   }
@@ -239,12 +240,37 @@ app.post('/products', async (req, res) => {
   try {
     client = await pool.connect();
 
-    // Insert product into the products table
+    // Check if product with the same name and price already exists
+    const checkQuery = 'SELECT * FROM products WHERE product_name = $1 AND buying_price = $2 LIMIT 1;';
+    const checkValues = [product_name, buying_price];
+    const checkResult = await client.query(checkQuery, checkValues);
+
+    if (checkResult.rows.length > 0) {
+      // Product exists with the same name and price
+      const existingProduct = checkResult.rows[0];
+
+      // Compare the expiry dates
+      if (existingProduct.expiry_date === expiry_date) {
+        return res.status(409).json({ error: 'Product with the same name and price already exists with the same expiry date.' });
+      }
+      
+      // If expiry date is different, insert the new product
+      const query = `
+        INSERT INTO products (product_name, category, buying_price, quantity, unit, expiry_date)
+        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *;
+      `;
+
+      const values = [product_name, category, buying_price, quantity, unit, expiry_date];
+      const result = await client.query(query, values);
+
+      return res.status(201).json({ message: 'Product added successfully with a different expiry date', product: result.rows[0] });
+    }
+
+    // If no matching product exists, insert the new product
     const query = `
       INSERT INTO products (product_name, category, buying_price, quantity, unit, expiry_date)
       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *;
     `;
-
     const values = [product_name, category, buying_price, quantity, unit, expiry_date];
 
     const result = await client.query(query, values);
@@ -429,7 +455,14 @@ app.post("/sales", async (req, res) => {
     for (let item of cart) {
       const { product_name, soldQuantity, buying_price, category, expiry_date, unit } = item;
 
-      const total_price = parseFloat(buying_price) * soldQuantity;
+      // Convert quantity based on unit type
+      let formattedSoldQuantity = unit === "kg" ? parseFloat(soldQuantity) : parseInt(soldQuantity, 10);
+      
+      if (isNaN(formattedSoldQuantity)) {
+        return res.status(400).json({ message: `Invalid quantity for ${product_name}` });
+      }
+
+      const total_price = parseFloat(buying_price) * formattedSoldQuantity;
 
       // Check Stock Before Selling
       const product = await pool.query(
@@ -437,7 +470,7 @@ app.post("/sales", async (req, res) => {
         [product_name]
       );
 
-      const stockQuantity = product.rows[0].quantity;
+      const stockQuantity = parseFloat(product.rows[0].quantity);  // Ensure quantity supports decimals
       const expiryDate = new Date(product.rows[0].expiry_date);
       const today = new Date();
       const diffDays = Math.ceil((expiryDate - today) / (1000 * 60 * 60 * 24));
@@ -448,7 +481,7 @@ app.post("/sales", async (req, res) => {
       }
 
       // Low Stock Check
-      if (stockQuantity < soldQuantity) {
+      if (stockQuantity < formattedSoldQuantity) {
         return res.status(400).json({ message: `${product_name} is Out of Stock!` });
       }
 
@@ -461,13 +494,13 @@ app.post("/sales", async (req, res) => {
       await pool.query(
         `INSERT INTO sales (product_name, sold_quantity, total_price, category, expiry_date, unit)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [product_name, soldQuantity, total_price, category, expiry_date, unit]
+        [product_name, formattedSoldQuantity, total_price, category, expiry_date, unit]
       );
 
       // Reduce Stock Quantity
       await pool.query(
         `UPDATE products SET quantity = quantity - $1 WHERE product_name = $2 AND quantity >= $1`,
-        [soldQuantity, product_name]
+        [formattedSoldQuantity, product_name]
       );
     }
 
@@ -553,7 +586,7 @@ const generateReport = async (title, data, filename, res) => {
     doc.text(sale_date, 270, y, { width:150, align: "center" });
     doc.text(`Rs. ${total_price}`, 370, y, {  align: "center" });
 
-    doc.moveDown(2.5)
+    doc.moveDown(1)
   });
 
   doc.moveDown(1);
