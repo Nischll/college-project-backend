@@ -672,6 +672,29 @@ app.get("/sales/yearly/report/:year", async (req, res) => {
   }
 });
 
+// POST API to Insert Payment Data
+app.post("/api/payments", async (req, res) => {
+  try {
+    const { total_price } = req.body;
+
+    if (!total_price || isNaN(total_price)) {
+      return res.status(400).json({ error: "Invalid total_price" });
+    }
+
+    const query = "INSERT INTO payments (total_price) VALUES ($1) RETURNING *";
+    const values = [total_price];
+
+    const result = await pool.query(query, values);
+
+    res.status(201).json({ message: "Payment added successfully", payment: {
+      ...result.rows[0],
+      date_time: new Date(result.rows[0].date_time).toLocaleString() // Convert to local time
+    } });
+  } catch (error) {
+    console.error("Error inserting payment:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 
 
